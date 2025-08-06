@@ -11,7 +11,10 @@ app.use(express.json());
 const cors = require('cors');
 
 // Enable CORS for Shopify store domain (change to your actual store domain)
-const allowedOrigins = ['https://motovolt-dev-store.myshopify.com'];
+const allowedOrigins = [
+  'https://motovolt-dev-store.myshopify.com',
+  'https://motovolt.co/'  
+];
 
 app.use(cors({
   origin: function (origin, callback) {
