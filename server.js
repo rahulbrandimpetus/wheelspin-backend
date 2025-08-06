@@ -7,21 +7,26 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
-// Enable CORS for frontend testing
-app.use((req, res, next) => {
-  const allowedOrigins = [
-    'https://motovolt-dev-store.myshopify.com',
-    'http://localhost:3000',  
 
-  ];
-  const origin = req.headers.origin;
-  if (allowedOrigins.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
-  }
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  res.header('Access-Control-Allow-Methods', 'GET, POST');
-  next();
-});
+const cors = require('cors');
+
+// Enable CORS for Shopify store domain (change to your actual store domain)
+const allowedOrigins = ['https://motovolt-dev-store.myshopify.com'];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 
 // Twilio configuration
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
