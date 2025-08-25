@@ -103,7 +103,7 @@ const validatePhoneNumber = (req, res, next) => {
 app.post('/api/otp/send', otpRateLimit, validatePhoneNumber, async (req, res) => {
   try {
     const phoneNumber = req.formattedPhone;
-    const otp = "1234";
+    const otp = "1234"; //hard coded OTP
     const expiryTime = Date.now() + 10 * 60 * 1000; // 10 minutes expiry
     
     // Store OTP with metadata
@@ -238,7 +238,7 @@ app.post('/api/otp/resend', otpRateLimit, validatePhoneNumber, async (req, res) 
       }
     }
     
-    const otp = "1234";
+    const otp = "1234";  //hard coded OTP
     const expiryTime = Date.now() + 10 * 60 * 1000; // 10 minutes expiry
     
     // Store new OTP
