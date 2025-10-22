@@ -35,10 +35,19 @@ app.use(cors({
   optionsSuccessStatus: 200 // For legacy browser support
 }));
 
-// ADDED: Explicit preflight handler for all routes
-app.options('*', cors());
-
 app.use(bodyParser.json());
+
+// ADDED: Manual preflight handler for all routes
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    res.header('Access-Control-Allow-Origin', req.headers.origin);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 // ----- Prize Config -----
 const SHOP_METAFIELD_NAMESPACE = 'wheel_spin';
