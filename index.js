@@ -10,32 +10,32 @@ const PORT = process.env.PORT || process.env.APP_PORT || 3000;
 
 const app = express();
 
-const cors = require('cors');
-
-// FIXED: Enhanced CORS configuration
-app.use(cors({
-  origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    const allowedOrigins = [
-      'https://motovolt-dev-store.myshopify.com',
-      'https://motovolt.in'
-    ];
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(null, false);
-    }
-  },
-  methods: ['GET', 'POST', 'PUT', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
-  optionsSuccessStatus: 200 // For legacy browser support
-}));
 
 app.use(bodyParser.json());
+
+const cors = require('cors');
+
+// Enable CORS for Shopify store domain (change to your actual store domain)
+const allowedOrigins = [
+  'https://motovolt-dev-store.myshopify.com',
+  'https://motovolt.co'  
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
 
 // ADDED: Manual preflight handler for all routes
 app.use((req, res, next) => {
