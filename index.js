@@ -12,26 +12,38 @@ const app = express();
 
 const cors = require('cors');
 
-// Allow Shopify store frontend access
+// FIXED: Enhanced CORS configuration
 app.use(cors({
-  origin: [
- 'https://motovolt-dev-store.myshopify.com',
- 'https://motovolt.in'
-  ],
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+      'https://motovolt-dev-store.myshopify.com',
+      'https://motovolt.in'
+    ];
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(null, false);
+    }
+  },
   methods: ['GET', 'POST', 'PUT', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
+  optionsSuccessStatus: 200 // For legacy browser support
 }));
+
+// ADDED: Explicit preflight handler for all routes
+app.options('*', cors());
 
 app.use(bodyParser.json());
 
 // ----- Prize Config -----
 const SHOP_METAFIELD_NAMESPACE = 'wheel_spin';
 const SHOP_METAFIELD_KEY = 'prize_counts';
-const PRIZE_DISTRIBUTION_KEY = 'prize_distribution'; // Tracks how many of each prize distributed
-
-
-
+const PRIZE_DISTRIBUTION_KEY = 'prize_distribution';
 
 const PRIZES = [
   { id: 'kivo_easy_lite', label: 'Kivo Easy Lite', prob: 0.001, max: 1 },
@@ -64,7 +76,6 @@ async function shopifyRequest(method, path, data) {
   }
 }
 
-// Get or create shop-level metafield for prize counts (remaining)
 async function ensureShopPrizeCounts() {
   const res = await shopifyRequest('get', `/metafields.json?namespace=${SHOP_METAFIELD_NAMESPACE}&key=${SHOP_METAFIELD_KEY}`);
   if (res.metafields && res.metafields.length > 0) {
@@ -74,7 +85,6 @@ async function ensureShopPrizeCounts() {
     return { metafield: mf, value: val };
   }
 
-  // Not found → create it
   const initialCounts = {};
   PRIZES.forEach(p => initialCounts[p.id] = p.max === null ? null : p.max);
 
@@ -93,7 +103,6 @@ async function ensureShopPrizeCounts() {
   return { metafield: createRes.metafield, value: initialCounts };
 }
 
-// Get or create shop-level metafield for prize distribution tracking
 async function ensurePrizeDistribution() {
   const res = await shopifyRequest('get', `/metafields.json?namespace=${SHOP_METAFIELD_NAMESPACE}&key=${PRIZE_DISTRIBUTION_KEY}`);
   if (res.metafields && res.metafields.length > 0) {
@@ -103,7 +112,6 @@ async function ensurePrizeDistribution() {
     return { metafield: mf, value: val };
   }
 
-  // Not found → create it
   const initialDistribution = {};
   PRIZES.forEach(p => initialDistribution[p.id] = 0);
 
@@ -177,14 +185,12 @@ async function updateCustomerTags(customerId, tags) {
 async function addPrizeToCustomer(customer, prizeId, prizeLabel, prizeNumber) {
   const currentDate = new Date().toISOString().split('T')[0];
   
-  // Create tags for tracking
   const spinPrizeTag = `Spin Prize: ${prizeLabel}`;
   const spinDateTag = `Spin Date: ${currentDate}`;
   const prizeNumberTag = `Prize Number: ${prizeNumber}`;
-  const internalTag = `wheel_prize:${prizeId}`; // For internal tracking
+  const internalTag = `wheel_prize:${prizeId}`;
   const playedTag = 'wheel_played';
   
-  // Get existing tags and add new ones
   const existingTags = customer.tags ? customer.tags.split(',').map(t => t.trim()) : [];
   const newTags = [...existingTags, spinPrizeTag, spinDateTag, prizeNumberTag, internalTag, playedTag];
   const uniqueTags = [...new Set(newTags)].join(', ');
@@ -194,7 +200,6 @@ async function addPrizeToCustomer(customer, prizeId, prizeLabel, prizeNumber) {
   
   await updateCustomerTags(customer.id, uniqueTags);
   
-  // Also update note with prize info
   const noteData = {
     customer: {
       id: customer.id,
@@ -229,7 +234,7 @@ function getPrizeFromTags(customer) {
   };
 }
 
-// ----- API Endpoint -----
+// ----- API Endpoints -----
 app.post('/spin', async (req, res) => {
   try {
     const phone = (req.body.phone || '').trim();
@@ -237,13 +242,11 @@ app.post('/spin', async (req, res) => {
 
     console.log('🎡 Spin request for phone:', phone);
 
-    // find or create customer
     let customer = await findCustomerByPhone(phone);
     
     if (customer) {
       console.log('👤 Found existing customer:', customer.id);
       
-      // Check if already played via tags
       if (hasPlayedWheel(customer)) {
         console.log('⚠️ Customer already played');
         const prizeInfo = getPrizeFromTags(customer);
@@ -257,7 +260,6 @@ app.post('/spin', async (req, res) => {
       customer = await createCustomerWithPhone(phone);
     }
 
-    // get current prize counts and distribution
     let shopMf = await ensureShopPrizeCounts();
     let distributionMf = await ensurePrizeDistribution();
     let counts = shopMf.value;
@@ -275,7 +277,6 @@ app.post('/spin', async (req, res) => {
       return res.json({ prize: { label: fallback.label, number: prizeNumber } });
     }
 
-    // Weighted random selection
     const totalProb = available.reduce((sum, p) => sum + p.prob, 0);
     let r = Math.random() * totalProb;
     let cumulative = 0;
@@ -291,18 +292,15 @@ app.post('/spin', async (req, res) => {
 
     console.log('🎁 Prize selected:', chosen.label);
 
-    // Update counts
     if (counts[chosen.id] !== null) {
       counts[chosen.id] = Math.max(0, counts[chosen.id] - 1);
       await setShopPrizeCounts(counts, shopMf.metafield.id);
       console.log('📉 Updated prize count for', chosen.id, ':', counts[chosen.id]);
     }
 
-    // Increment distribution counter and get prize number
     const prizeNumber = await incrementPrizeDistribution(chosen.id, distributionMf);
     console.log('📈 Prize number for', chosen.id, ':', prizeNumber);
 
-    // Save prize to customer tags
     await addPrizeToCustomer(customer, chosen.id, chosen.label, prizeNumber);
 
     res.json({ 
@@ -318,19 +316,16 @@ app.post('/spin', async (req, res) => {
   }
 });
 
-// Reset prize counts to initial values
 app.post('/admin/reset-prizes', async (req, res) => {
   try {
     const { adminKey } = req.body;
     
-    // Simple admin key check (set in .env as ADMIN_RESET_KEY)
     if (adminKey !== process.env.ADMIN_RESET_KEY) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
     const shopMf = await ensureShopPrizeCounts();
     
-    // Reset to initial max values
     const resetCounts = {};
     PRIZES.forEach(p => resetCounts[p.id] = p.max === null ? null : p.max);
     
@@ -349,7 +344,6 @@ app.post('/admin/reset-prizes', async (req, res) => {
   }
 });
 
-// Get current prize statistics
 app.get('/admin/stats', async (req, res) => {
   try {
     const { adminKey } = req.query;
@@ -376,12 +370,10 @@ app.get('/admin/stats', async (req, res) => {
   }
 });
 
-// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Get customer spin history
 app.get('/customer/:phone', async (req, res) => {
   try {
     const phone = req.params.phone;
