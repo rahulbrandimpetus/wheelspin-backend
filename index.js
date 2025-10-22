@@ -9,12 +9,6 @@ const API_BASE = `https://${SHOP}/admin/api/2024-10`;
 const PORT = process.env.PORT || process.env.APP_PORT || 3000;
 
 const app = express();
-app.use(bodyParser.json());
-
-// ----- Prize Config -----
-const SHOP_METAFIELD_NAMESPACE = 'wheel_spin';
-const SHOP_METAFIELD_KEY = 'prize_counts';
-const PRIZE_DISTRIBUTION_KEY = 'prize_distribution'; // Tracks how many of each prize distributed
 
 const cors = require('cors');
 
@@ -28,6 +22,15 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
 }));
+
+app.use(bodyParser.json());
+
+// ----- Prize Config -----
+const SHOP_METAFIELD_NAMESPACE = 'wheel_spin';
+const SHOP_METAFIELD_KEY = 'prize_counts';
+const PRIZE_DISTRIBUTION_KEY = 'prize_distribution'; // Tracks how many of each prize distributed
+
+
 
 
 const PRIZES = [
