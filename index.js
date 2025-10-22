@@ -6,7 +6,7 @@ const bodyParser = require('body-parser');
 const SHOP = process.env.SHOPIFY_STORE;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const API_BASE = `https://${SHOP}/admin/api/2024-10`;
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || process.env.APP_PORT || 3000;
 
 const app = express();
 app.use(bodyParser.json());
@@ -21,7 +21,8 @@ const cors = require('cors');
 // Allow Shopify store frontend access
 app.use(cors({
   origin: [
-    'motovolt-dev-store.myshopify.com', // replace with your actual Shopify store URL
+ 'https://motovolt-dev-store.myshopify.com',
+ 'https://motovolt.in'
   ],
   methods: ['GET', 'POST', 'PUT', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
