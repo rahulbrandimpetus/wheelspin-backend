@@ -13,7 +13,10 @@ const app = express();
 
 app.use(bodyParser.json());
 
+const cors = require('cors');
 app.use(cors({ origin: '*', methods: ['GET','POST','OPTIONS'] }));
+
+
 
 // Prize Config
 const SHOP_METAFIELD_NAMESPACE = 'wheel_spin';
