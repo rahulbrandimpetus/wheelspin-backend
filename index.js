@@ -6,16 +6,16 @@ const bodyParser = require('body-parser');
 const SHOP = process.env.SHOPIFY_STORE;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const API_BASE = `https://${SHOP}/admin/api/2024-10`;
+const GRAPHQL_ENDPOINT = `https://${SHOP}/admin/api/2024-10/graphql.json`;
 const PORT = process.env.PORT || process.env.APP_PORT || 3000;
 
 const app = express();
-
 
 app.use(bodyParser.json());
 
 const cors = require('cors');
 
-// Enable CORS for Shopify store domain (change to your actual store domain)
+// Enable CORS for Shopify store domain
 const allowedOrigins = [
   'https://motovolt-dev-store.myshopify.com',
   'https://motovolt.co'  
@@ -36,20 +36,27 @@ app.use(cors({
   credentials: true
 }));
 
-
-// ADDED: Manual preflight handler for all routes
+// Manual preflight handler for all routes
 app.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
-    res.header('Access-Control-Allow-Origin', req.headers.origin);
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    return res.sendStatus(200);
+    const origin = req.headers.origin;
+    
+    // Check if origin is allowed
+    if (!origin || allowedOrigins.includes(origin)) {
+      res.header('Access-Control-Allow-Origin', origin || '*');
+      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.header('Access-Control-Allow-Credentials', 'true');
+      return res.sendStatus(200);
+    }
+    
+    // If origin not allowed, still send preflight response but without allowing it
+    return res.sendStatus(403);
   }
   next();
 });
 
-// ----- Prize Config -----
+// Prize Config
 const SHOP_METAFIELD_NAMESPACE = 'wheel_spin';
 const SHOP_METAFIELD_KEY = 'prize_counts';
 const PRIZE_DISTRIBUTION_KEY = 'prize_distribution';
@@ -63,7 +70,7 @@ const PRIZES = [
   { id: 'better_luck', label: 'Better Luck Next Time', prob: 0.01, max: null }
 ];
 
-// ----- Shopify Helpers -----
+// Shopify REST API Helpers
 async function shopifyRequest(method, path, data) {
   const url = `${API_BASE}${path}`;
   const headers = {
@@ -85,12 +92,40 @@ async function shopifyRequest(method, path, data) {
   }
 }
 
+// GraphQL Helper
+async function shopifyGraphQL(query, variables = {}) {
+  const headers = {
+    'X-Shopify-Access-Token': TOKEN,
+    'Content-Type': 'application/json',
+  };
+  
+  try {
+    const response = await axios.post(GRAPHQL_ENDPOINT, {
+      query,
+      variables
+    }, { headers });
+    
+    if (response.data.errors) {
+      console.error('GraphQL Errors:', JSON.stringify(response.data.errors, null, 2));
+      throw new Error(`GraphQL Error: ${response.data.errors[0].message}`);
+    }
+    
+    return response.data.data;
+  } catch (error) {
+    console.error('GraphQL Request Error:', {
+      message: error.message,
+      response: error.response?.data
+    });
+    throw error;
+  }
+}
+
 async function ensureShopPrizeCounts() {
   const res = await shopifyRequest('get', `/metafields.json?namespace=${SHOP_METAFIELD_NAMESPACE}&key=${SHOP_METAFIELD_KEY}`);
   if (res.metafields && res.metafields.length > 0) {
     const mf = res.metafields[0];
     const val = typeof mf.value === 'string' ? JSON.parse(mf.value) : mf.value;
-    console.log('✅ Existing prize counts loaded:', val);
+    console.log('Existing prize counts loaded:', val);
     return { metafield: mf, value: val };
   }
 
@@ -107,7 +142,7 @@ async function ensureShopPrizeCounts() {
   };
 
   const createRes = await shopifyRequest('post', `/metafields.json`, data);
-  console.log('🆕 Created initial prize counts metafield:', initialCounts);
+  console.log('Created initial prize counts metafield:', initialCounts);
 
   return { metafield: createRes.metafield, value: initialCounts };
 }
@@ -117,7 +152,7 @@ async function ensurePrizeDistribution() {
   if (res.metafields && res.metafields.length > 0) {
     const mf = res.metafields[0];
     const val = typeof mf.value === 'string' ? JSON.parse(mf.value) : mf.value;
-    console.log('✅ Prize distribution tracking loaded:', val);
+    console.log('Prize distribution tracking loaded:', val);
     return { metafield: mf, value: val };
   }
 
@@ -134,7 +169,7 @@ async function ensurePrizeDistribution() {
   };
 
   const createRes = await shopifyRequest('post', `/metafields.json`, data);
-  console.log('🆕 Created prize distribution tracking:', initialDistribution);
+  console.log('Created prize distribution tracking:', initialDistribution);
 
   return { metafield: createRes.metafield, value: initialDistribution };
 }
@@ -175,7 +210,7 @@ async function createCustomerWithPhone(phone) {
   const res = await shopifyRequest('post', `/customers.json`, {
     customer: { phone, verified_email: false, note: 'Created for wheel spin' }
   });
-  console.log('✅ Created customer:', res.customer.id, phone);
+  console.log('Created customer:', res.customer.id, phone);
   return res.customer;
 }
 
@@ -187,7 +222,7 @@ async function updateCustomerTags(customerId, tags) {
     }
   };
   const result = await shopifyRequest('put', `/customers/${customerId}.json`, data);
-  console.log('✅ Tags updated successfully for customer:', customerId);
+  console.log('Tags updated successfully for customer:', customerId);
   return result.customer;
 }
 
@@ -204,7 +239,7 @@ async function addPrizeToCustomer(customer, prizeId, prizeLabel, prizeNumber) {
   const newTags = [...existingTags, spinPrizeTag, spinDateTag, prizeNumberTag, internalTag, playedTag];
   const uniqueTags = [...new Set(newTags)].join(', ');
   
-  console.log('📝 Adding tags to customer:', customer.id);
+  console.log('Adding tags to customer:', customer.id);
   console.log('   Tags:', spinPrizeTag, '|', spinDateTag, '|', prizeNumberTag);
   
   await updateCustomerTags(customer.id, uniqueTags);
@@ -243,21 +278,187 @@ function getPrizeFromTags(customer) {
   };
 }
 
-// ----- API Endpoints -----
+// GraphQL Metaobject Functions
+async function getAllWheelPrizeMetaobjects() {
+  const query = `
+    query {
+      metaobjects(type: "wheel_prize", first: 50) {
+        edges {
+          node {
+            id
+            handle
+            fields {
+              key
+              value
+            }
+          }
+        }
+      }
+    }
+  `;
+  
+  try {
+    const data = await shopifyGraphQL(query);
+    
+    if (!data.metaobjects || !data.metaobjects.edges) {
+      console.log('No metaobjects found. The definition may not exist yet.');
+      return null;
+    }
+    
+    const metaobjects = data.metaobjects.edges.map(edge => edge.node);
+    console.log('Found', metaobjects.length, 'metaobjects');
+    return metaobjects;
+  } catch (err) {
+    console.error('Error fetching metaobjects:', err.message);
+    return null;
+  }
+}
+
+function getFieldValue(metaobject, key) {
+  const field = metaobject.fields.find(f => f.key === key);
+  return field ? field.value : null;
+}
+
+async function createPrizeMetaobject(prize, counts, distribution) {
+  const remaining = counts[prize.id];
+  const totalDistributed = distribution[prize.id] || 0;
+  const isAvailable = remaining === null || remaining > 0;
+  
+  const mutation = `
+    mutation CreateMetaobject($metaobject: MetaobjectCreateInput!) {
+      metaobjectCreate(metaobject: $metaobject) {
+        metaobject {
+          id
+          handle
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+  
+  const variables = {
+    metaobject: {
+      type: "wheel_prize",
+      fields: [
+        { key: "prize_id", value: prize.id },
+        { key: "prize_label", value: prize.label },
+        { key: "max_available", value: String(prize.max === null ? -1 : prize.max) },
+        { key: "remaining_count", value: String(remaining === null ? -1 : remaining) },
+        { key: "total_distributed", value: String(totalDistributed) },
+        { key: "is_available", value: String(isAvailable) },
+        { key: "last_updated", value: new Date().toISOString() }
+      ]
+    }
+  };
+  
+  const data = await shopifyGraphQL(mutation, variables);
+  
+  if (data.metaobjectCreate.userErrors.length > 0) {
+    console.error('Error creating metaobject:', data.metaobjectCreate.userErrors);
+    throw new Error(data.metaobjectCreate.userErrors[0].message);
+  }
+  
+  console.log('Created metaobject for', prize.label);
+  return data.metaobjectCreate.metaobject;
+}
+
+async function updatePrizeMetaobject(metaobjectId, prize, counts, distribution) {
+  const remaining = counts[prize.id];
+  const totalDistributed = distribution[prize.id] || 0;
+  const isAvailable = remaining === null || remaining > 0;
+  
+  const mutation = `
+    mutation UpdateMetaobject($id: ID!, $metaobject: MetaobjectUpdateInput!) {
+      metaobjectUpdate(id: $id, metaobject: $metaobject) {
+        metaobject {
+          id
+          handle
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+  
+  const variables = {
+    id: metaobjectId,
+    metaobject: {
+      fields: [
+        { key: "prize_id", value: prize.id },
+        { key: "prize_label", value: prize.label },
+        { key: "max_available", value: String(prize.max === null ? -1 : prize.max) },
+        { key: "remaining_count", value: String(remaining === null ? -1 : remaining) },
+        { key: "total_distributed", value: String(totalDistributed) },
+        { key: "is_available", value: String(isAvailable) },
+        { key: "last_updated", value: new Date().toISOString() }
+      ]
+    }
+  };
+  
+  const data = await shopifyGraphQL(mutation, variables);
+  
+  if (data.metaobjectUpdate.userErrors.length > 0) {
+    console.error('Error updating metaobject:', data.metaobjectUpdate.userErrors);
+    throw new Error(data.metaobjectUpdate.userErrors[0].message);
+  }
+  
+  console.log('Updated metaobject for', prize.label);
+  return data.metaobjectUpdate.metaobject;
+}
+
+async function syncPrizesToMetaobjects(counts, distribution) {
+  try {
+    console.log('Syncing prizes to metaobjects via GraphQL...');
+    
+    const existingMetaobjects = await getAllWheelPrizeMetaobjects();
+    
+    if (existingMetaobjects === null) {
+      console.log('Metaobject definition not found. Skipping sync.');
+      console.log('Create the definition in: Settings -> Custom Data -> Metaobjects');
+      return false;
+    }
+    
+    for (const prize of PRIZES) {
+      const existing = existingMetaobjects.find(mo => {
+        const prizeId = getFieldValue(mo, 'prize_id');
+        return prizeId === prize.id;
+      });
+      
+      if (existing) {
+        await updatePrizeMetaobject(existing.id, prize, counts, distribution);
+      } else {
+        await createPrizeMetaobject(prize, counts, distribution);
+      }
+    }
+    
+    console.log('All prize metaobjects synced successfully');
+    return true;
+  } catch (err) {
+    console.error('Error syncing metaobjects:', err.message);
+    return false;
+  }
+}
+
+// API Endpoints
 app.post('/spin', async (req, res) => {
   try {
     const phone = (req.body.phone || '').trim();
     if (!phone) return res.status(400).json({ error: 'phone required' });
 
-    console.log('🎡 Spin request for phone:', phone);
+    console.log('Spin request for phone:', phone);
 
     let customer = await findCustomerByPhone(phone);
     
     if (customer) {
-      console.log('👤 Found existing customer:', customer.id);
+      console.log('Found existing customer:', customer.id);
       
       if (hasPlayedWheel(customer)) {
-        console.log('⚠️ Customer already played');
+        console.log('Customer already played');
         const prizeInfo = getPrizeFromTags(customer);
         return res.json({ 
           alreadyPlayed: true, 
@@ -265,7 +466,7 @@ app.post('/spin', async (req, res) => {
         });
       }
     } else {
-      console.log('🆕 Creating new customer for phone:', phone);
+      console.log('Creating new customer for phone:', phone);
       customer = await createCustomerWithPhone(phone);
     }
 
@@ -273,16 +474,21 @@ app.post('/spin', async (req, res) => {
     let distributionMf = await ensurePrizeDistribution();
     let counts = shopMf.value;
 
-    console.log('📊 Current prize counts:', counts);
-    console.log('📈 Total distributed:', distributionMf.value);
+    console.log('Current prize counts:', counts);
+    console.log('Total distributed:', distributionMf.value);
 
     const available = PRIZES.filter(p => counts[p.id] === null || counts[p.id] > 0);
     
     if (available.length === 0) {
-      console.log('❌ No prizes available, giving fallback');
+      console.log('No prizes available, giving fallback');
       const fallback = PRIZES.find(p => p.id === 'better_luck');
       const prizeNumber = await incrementPrizeDistribution(fallback.id, distributionMf);
       await addPrizeToCustomer(customer, fallback.id, fallback.label, prizeNumber);
+      
+      syncPrizesToMetaobjects(counts, distributionMf.value).catch(err => {
+        console.error('Warning: Metaobject sync failed:', err.message);
+      });
+      
       return res.json({ prize: { label: fallback.label, number: prizeNumber } });
     }
 
@@ -299,18 +505,22 @@ app.post('/spin', async (req, res) => {
       }
     }
 
-    console.log('🎁 Prize selected:', chosen.label);
+    console.log('Prize selected:', chosen.label);
 
     if (counts[chosen.id] !== null) {
       counts[chosen.id] = Math.max(0, counts[chosen.id] - 1);
       await setShopPrizeCounts(counts, shopMf.metafield.id);
-      console.log('📉 Updated prize count for', chosen.id, ':', counts[chosen.id]);
+      console.log('Updated prize count for', chosen.id, ':', counts[chosen.id]);
     }
 
     const prizeNumber = await incrementPrizeDistribution(chosen.id, distributionMf);
-    console.log('📈 Prize number for', chosen.id, ':', prizeNumber);
+    console.log('Prize number for', chosen.id, ':', prizeNumber);
 
     await addPrizeToCustomer(customer, chosen.id, chosen.label, prizeNumber);
+
+    syncPrizesToMetaobjects(counts, distributionMf.value).catch(err => {
+      console.error('Warning: Metaobject sync failed:', err.message);
+    });
 
     res.json({ 
       prize: { 
@@ -320,7 +530,7 @@ app.post('/spin', async (req, res) => {
       } 
     });
   } catch (err) {
-    console.error('❌ Spin Error:', err.response ? err.response.data : err.message);
+    console.error('Spin Error:', err.response ? err.response.data : err.message);
     res.status(500).json({ error: 'server error', details: err.message });
   }
 });
@@ -334,21 +544,47 @@ app.post('/admin/reset-prizes', async (req, res) => {
     }
 
     const shopMf = await ensureShopPrizeCounts();
+    const distributionMf = await ensurePrizeDistribution();
     
     const resetCounts = {};
     PRIZES.forEach(p => resetCounts[p.id] = p.max === null ? null : p.max);
     
     await setShopPrizeCounts(resetCounts, shopMf.metafield.id);
     
-    console.log('🔄 Prize counts reset to:', resetCounts);
+    await syncPrizesToMetaobjects(resetCounts, distributionMf.value);
+    
+    console.log('Prize counts reset to:', resetCounts);
     
     res.json({ 
       success: true, 
-      message: 'Prize counts reset successfully',
+      message: 'Prize counts reset and synced to metaobjects',
       newCounts: resetCounts
     });
   } catch (err) {
     console.error('Reset Error:', err.message);
+    res.status(500).json({ error: 'server error', details: err.message });
+  }
+});
+
+app.post('/admin/sync-metaobjects', async (req, res) => {
+  try {
+    const { adminKey } = req.body;
+    
+    if (adminKey !== process.env.ADMIN_RESET_KEY) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const shopMf = await ensureShopPrizeCounts();
+    const distributionMf = await ensurePrizeDistribution();
+    
+    const success = await syncPrizesToMetaobjects(shopMf.value, distributionMf.value);
+    
+    res.json({ 
+      success, 
+      message: success ? 'Metaobjects synced successfully' : 'Metaobject sync failed - check definition exists'
+    });
+  } catch (err) {
+    console.error('Sync Error:', err.message);
     res.status(500).json({ error: 'server error', details: err.message });
   }
 });
@@ -409,15 +645,65 @@ app.get('/customer/:phone', async (req, res) => {
   }
 });
 
-// ----- Server start -----
+app.get('/api/prizes/available', async (req, res) => {
+  try {
+    const shopMf = await ensureShopPrizeCounts();
+    const distributionMf = await ensurePrizeDistribution();
+    
+    const availablePrizes = PRIZES.map(p => ({
+      id: p.id,
+      label: p.label,
+      remaining: shopMf.value[p.id],
+      totalDistributed: distributionMf.value[p.id] || 0,
+      isAvailable: shopMf.value[p.id] === null || shopMf.value[p.id] > 0
+    }));
+    
+    res.json({ 
+      prizes: availablePrizes,
+      lastUpdated: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('Error fetching available prizes:', err.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Server start
 (async () => {
   try {
-    console.log('🔧 Initializing prize counts and distribution tracking...');
-    await ensureShopPrizeCounts();
-    await ensurePrizeDistribution();
-    app.listen(PORT, () => console.log(`🚀 Wheel spin backend running on port ${PORT}`));
+    console.log('Initializing prize counts and distribution tracking...');
+    const shopMf = await ensureShopPrizeCounts();
+    const distributionMf = await ensurePrizeDistribution();
+    
+    console.log('Attempting initial metaobject sync...');
+    const syncSuccess = await syncPrizesToMetaobjects(shopMf.value, distributionMf.value);
+    
+    if (!syncSuccess) {
+      console.log('');
+      console.log('========================================');
+      console.log('METAOBJECT SETUP REQUIRED (OPTIONAL)');
+      console.log('========================================');
+      console.log('To enable dashboard viewing in Shopify Admin:');
+      console.log('');
+      console.log('1. Go to: Settings -> Custom Data -> Metaobjects');
+      console.log('2. Click "Add definition"');
+      console.log('3. Name: "Wheel Prize", Type: "wheel_prize"');
+      console.log('4. Add fields:');
+      console.log('   - prize_id (Single line text)');
+      console.log('   - prize_label (Single line text)');
+      console.log('   - max_available (Integer)');
+      console.log('   - remaining_count (Integer)');
+      console.log('   - total_distributed (Integer)');
+      console.log('   - is_available (True/False)');
+      console.log('   - last_updated (Date and time)');
+      console.log('5. Save and restart server');
+      console.log('========================================');
+      console.log('');
+    }
+    
+    app.listen(PORT, () => console.log('Wheel spin backend running on port', PORT));
   } catch (err) {
-    console.error('💥 Startup error:', err.message);
+    console.error('Startup error:', err.message);
     process.exit(1);
   }
 })();
