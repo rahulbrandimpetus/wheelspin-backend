@@ -15,46 +15,40 @@ app.use(bodyParser.json());
 
 const cors = require('cors');
 
-// Enable CORS for Shopify store domain
 const allowedOrigins = [
   'https://motovolt-dev-store.myshopify.com',
-  'https://motovolt.co'  
+  'https://motovolt.co'
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
-    // allow requests with no origin (like mobile apps or curl)
-    if (!origin) return callback(null, true);
+    if (!origin) return callback(null, true); // allow Postman, curl, etc.
     if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
+      callback(null, true);
     } else {
-      return callback(new Error('Not allowed by CORS'));
+      console.warn('Blocked by CORS:', origin);
+      callback(new Error('Not allowed by CORS'));
     }
   },
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  credentials: true,
+  optionsSuccessStatus: 200
 }));
 
-// Manual preflight handler for all routes
-app.use((req, res, next) => {
-  if (req.method === 'OPTIONS') {
-    const origin = req.headers.origin;
-    
-    // Check if origin is allowed
-    if (!origin || allowedOrigins.includes(origin)) {
-      res.header('Access-Control-Allow-Origin', origin || '*');
-      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-      res.header('Access-Control-Allow-Credentials', 'true');
-      return res.sendStatus(200);
-    }
-    
-    // If origin not allowed, still send preflight response but without allowing it
-    return res.sendStatus(403);
+// Ensure preflight requests always get correct headers
+app.options('*', (req, res) => {
+  const origin = req.headers.origin;
+  if (!origin || allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    return res.sendStatus(200);
   }
-  next();
+  return res.sendStatus(403);
 });
+
 
 // Prize Config
 const SHOP_METAFIELD_NAMESPACE = 'wheel_spin';
