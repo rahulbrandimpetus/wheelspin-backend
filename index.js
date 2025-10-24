@@ -13,42 +13,7 @@ const app = express();
 
 app.use(bodyParser.json());
 
-const cors = require('cors');
-
-const allowedOrigins = [
-  'https://motovolt-dev-store.myshopify.com',
-  'https://motovolt.co'
-];
-
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true); // allow Postman, curl, etc.
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      console.warn('Blocked by CORS:', origin);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
-  optionsSuccessStatus: 200
-}));
-
-// Ensure preflight requests always get correct headers
-app.options('*', (req, res) => {
-  const origin = req.headers.origin;
-  if (!origin || allowedOrigins.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin || '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    return res.sendStatus(200);
-  }
-  return res.sendStatus(403);
-});
-
+app.use(cors({ origin: '*', methods: ['GET','POST','OPTIONS'] }));
 
 // Prize Config
 const SHOP_METAFIELD_NAMESPACE = 'wheel_spin';
