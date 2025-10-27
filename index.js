@@ -227,9 +227,17 @@ async function loadPrizesFromMetaobjects() {
       return;
     }
     
+    // Parse probability as percentage (0-100) and convert to decimal (0-1)
     let prob = parseFloat(probStr);
     if (!probStr || isNaN(prob) || prob < 0) {
-      prob = 0.01;
+      prob = 1.0; // Default 1%
+    } else {
+      prob = prob / 100; // Convert percentage to decimal
+    }
+    
+    // Cap at 100%
+    if (prob > 1) {
+      prob = 1;
     }
     
     let max = null;
@@ -423,7 +431,7 @@ app.get('/admin/stats', async (req, res) => {
     const stats = PRIZES.map(p => ({
       id: p.id,
       label: p.label,
-      probability: p.prob,
+      probability: (p.prob * 100).toFixed(2) + '%', // Convert back to percentage for display
       maxCount: p.max,
       remaining: p.remaining,
       totalDistributed: p.totalDistributed,
@@ -474,7 +482,7 @@ app.get('/api/prizes/available', async (req, res) => {
     const availablePrizes = PRIZES.map(p => ({
       id: p.id,
       label: p.label,
-      probability: p.prob,
+      probability: (p.prob * 100).toFixed(2) + '%', // Convert back to percentage for display
       maxCount: p.max,
       remaining: p.remaining,
       totalDistributed: p.totalDistributed,
@@ -533,13 +541,19 @@ app.get('/api/prizes/available', async (req, res) => {
     console.error('4. Add these fields:');
     console.error('   - prize_id (Single line text) - REQUIRED');
     console.error('   - prize_label (Single line text) - REQUIRED');
-    console.error('   - probability (Decimal) - REQUIRED - Client editable');
+    console.error('   - probability (Decimal) - REQUIRED - Client editable (0-100%)');
     console.error('   - max_count (Integer) - REQUIRED - Client editable (-1 for unlimited)');
     console.error('   - remaining_count (Integer) - Auto-updated by system');
     console.error('   - total_distributed (Integer) - Auto-updated by system');
     console.error('   - is_available (True/False) - Auto-updated by system');
     console.error('   - last_updated (Date and time) - Auto-updated by system');
     console.error('5. Create metaobject entries for each prize');
+    console.error('   Example:');
+    console.error('   - prize_id: "kivo_easy_lite"');
+    console.error('   - prize_label: "Kivo Easy Lite"');
+    console.error('   - probability: 0.1 (for 0.1% chance)');
+    console.error('   - probability: 33 (for 33% chance)');
+    console.error('   - max_count: 1 (use -1 for unlimited)');
     console.error('6. Restart the server');
     console.error('');
     console.error('========================================');
