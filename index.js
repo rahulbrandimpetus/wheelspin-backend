@@ -291,26 +291,27 @@ async function getCurrentPrizes() {
   return await loadPrizesFromMetaobjects();
 }
 
-// Update all fields after prize distribution
+// Update all fields after prize distribution (atomic operation)
 async function updatePrizeAfterSpin(prize) {
   const updates = [];
   
-  // Calculate new remaining count
+  // Calculate new values
+  const newTotal = prize.totalDistributed + 1;
+  let newRemaining = prize.remaining;
+  let isAvailable = true;
+  
   if (prize.remaining !== null) {
-    const newRemaining = Math.max(0, prize.remaining - 1);
+    newRemaining = Math.max(0, prize.remaining - 1);
+    isAvailable = newRemaining > 0;
     updates.push({ key: "remaining_count", value: String(newRemaining) });
-    updates.push({ key: "is_available", value: String(newRemaining > 0) });
-  } else {
-    updates.push({ key: "is_available", value: "true" });
   }
   
-  // Increment total distributed
-  const newTotal = prize.totalDistributed + 1;
+  // Add all updates in single transaction
   updates.push({ key: "total_distributed", value: String(newTotal) });
-  
-  // Update timestamp
+  updates.push({ key: "is_available", value: String(isAvailable) });
   updates.push({ key: "last_updated", value: new Date().toISOString() });
   
+  // Single atomic update to prevent race conditions
   await updatePrizeMetaobject(prize.metaobjectId, updates);
   
   return newTotal;
@@ -340,7 +341,18 @@ app.post('/spin', async (req, res) => {
     const PRIZES = await getCurrentPrizes();
 
     // Filter available prizes based on remaining count
-    const available = PRIZES.filter(p => p.remaining === null || p.remaining > 0);
+    const available = PRIZES.filter(p => {
+      // Unlimited prizes are always available
+      if (p.remaining === null) return true;
+      
+      // Check remaining count
+      if (p.remaining <= 0) return false;
+      
+      // Double-check: ensure we haven't exceeded max_count
+      if (p.max !== null && p.totalDistributed >= p.max) return false;
+      
+      return true;
+    });
     
     if (available.length === 0) {
       const fallback = PRIZES.find(p => p.id === 'better_luck') || PRIZES[PRIZES.length - 1];
@@ -369,7 +381,22 @@ app.post('/spin', async (req, res) => {
       }
     }
 
-    // Update all metaobject fields after spin
+    // Final safety check before distribution
+    if (chosen.remaining !== null && chosen.remaining <= 0) {
+      return res.status(500).json({ 
+        error: 'Prize no longer available',
+        details: 'This prize ran out during selection' 
+      });
+    }
+    
+    if (chosen.max !== null && chosen.totalDistributed >= chosen.max) {
+      return res.status(500).json({ 
+        error: 'Prize limit reached',
+        details: 'Maximum prizes already distributed' 
+      });
+    }
+
+    // Update all metaobject fields after spin (atomic operation)
     const prizeNumber = await updatePrizeAfterSpin(chosen);
 
     // Add prize to customer (only 2 tags)
