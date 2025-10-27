@@ -16,11 +16,6 @@ app.use(bodyParser.json());
 const cors = require('cors');
 app.use(cors({ origin: '*', methods: ['GET','POST','OPTIONS'] }));
 
-// Prize Config
-const SHOP_METAFIELD_NAMESPACE = 'wheel_spin';
-const SHOP_METAFIELD_KEY = 'prize_counts';
-const PRIZE_DISTRIBUTION_KEY = 'prize_distribution';
-
 // No caching - always load fresh from metaobjects for real-time updates
 
 // Shopify REST API Helpers
@@ -71,81 +66,6 @@ async function shopifyGraphQL(query, variables = {}) {
     });
     throw error;
   }
-}
-
-async function ensureShopPrizeCounts(prizes) {
-  const res = await shopifyRequest('get', `/metafields.json?namespace=${SHOP_METAFIELD_NAMESPACE}&key=${SHOP_METAFIELD_KEY}`);
-  if (res.metafields && res.metafields.length > 0) {
-    const mf = res.metafields[0];
-    const val = typeof mf.value === 'string' ? JSON.parse(mf.value) : mf.value;
-    return { metafield: mf, value: val };
-  }
-
-  const initialCounts = {};
-  prizes.forEach(p => initialCounts[p.id] = p.max === null ? null : p.max);
-
-  const data = {
-    metafield: {
-      namespace: SHOP_METAFIELD_NAMESPACE,
-      key: SHOP_METAFIELD_KEY,
-      type: 'json',
-      value: JSON.stringify(initialCounts)
-    }
-  };
-
-  const createRes = await shopifyRequest('post', `/metafields.json`, data);
-  return { metafield: createRes.metafield, value: initialCounts };
-}
-
-async function ensurePrizeDistribution(prizes) {
-  const res = await shopifyRequest('get', `/metafields.json?namespace=${SHOP_METAFIELD_NAMESPACE}&key=${PRIZE_DISTRIBUTION_KEY}`);
-  if (res.metafields && res.metafields.length > 0) {
-    const mf = res.metafields[0];
-    const val = typeof mf.value === 'string' ? JSON.parse(mf.value) : mf.value;
-    return { metafield: mf, value: val };
-  }
-
-  const initialDistribution = {};
-  prizes.forEach(p => initialDistribution[p.id] = 0);
-
-  const data = {
-    metafield: {
-      namespace: SHOP_METAFIELD_NAMESPACE,
-      key: PRIZE_DISTRIBUTION_KEY,
-      type: 'json',
-      value: JSON.stringify(initialDistribution)
-    }
-  };
-
-  const createRes = await shopifyRequest('post', `/metafields.json`, data);
-  return { metafield: createRes.metafield, value: initialDistribution };
-}
-
-async function setShopPrizeCounts(countObj, metafieldId) {
-  const data = {
-    metafield: {
-      id: metafieldId,
-      value: JSON.stringify(countObj),
-      type: 'json'
-    }
-  };
-  return shopifyRequest('put', `/metafields/${metafieldId}.json`, data);
-}
-
-async function incrementPrizeDistribution(prizeId, distributionMf) {
-  const distribution = distributionMf.value;
-  distribution[prizeId] = (distribution[prizeId] || 0) + 1;
-  
-  const data = {
-    metafield: {
-      id: distributionMf.metafield.id,
-      value: JSON.stringify(distribution),
-      type: 'json'
-    }
-  };
-  
-  await shopifyRequest('put', `/metafields/${distributionMf.metafield.id}.json`, data);
-  return distribution[prizeId];
 }
 
 async function findCustomerByPhone(phone) {
@@ -259,11 +179,7 @@ function getFieldValue(metaobject, key) {
   return field ? field.value : null;
 }
 
-async function updatePrizeMetaobject(metaobjectId, prize, counts, distribution) {
-  const remaining = counts[prize.id];
-  const totalDistributed = distribution[prize.id] || 0;
-  const isAvailable = remaining === null || remaining > 0;
-  
+async function updatePrizeMetaobject(metaobjectId, updates) {
   const mutation = `
     mutation UpdateMetaobject($id: ID!, $metaobject: MetaobjectUpdateInput!) {
       metaobjectUpdate(id: $id, metaobject: $metaobject) {
@@ -279,16 +195,9 @@ async function updatePrizeMetaobject(metaobjectId, prize, counts, distribution) 
     }
   `;
   
-  const fields = [
-    { key: "remaining_count", value: String(remaining === null ? -1 : remaining) },
-    { key: "total_distributed", value: String(totalDistributed) },
-    { key: "is_available", value: String(isAvailable) },
-    { key: "last_updated", value: new Date().toISOString() }
-  ];
-  
   const variables = {
     id: metaobjectId,
-    metaobject: { fields }
+    metaobject: { fields: updates }
   };
   
   const data = await shopifyGraphQL(mutation, variables);
@@ -299,32 +208,6 @@ async function updatePrizeMetaobject(metaobjectId, prize, counts, distribution) 
   }
   
   return data.metaobjectUpdate.metaobject;
-}
-
-async function syncPrizesToMetaobjects(counts, distribution, prizes) {
-  try {
-    const existingMetaobjects = await getAllWheelPrizeMetaobjects();
-    
-    if (existingMetaobjects === null) {
-      return false;
-    }
-    
-    for (const prize of prizes) {
-      const existing = existingMetaobjects.find(mo => {
-        const prizeId = getFieldValue(mo, 'prize_id');
-        return prizeId === prize.id;
-      });
-      
-      if (existing) {
-        await updatePrizeMetaobject(existing.id, prize, counts, distribution);
-      }
-    }
-    
-    return true;
-  } catch (err) {
-    console.error('Error syncing metaobjects:', err.message);
-    return false;
-  }
 }
 
 // Load prizes from metaobjects (ONLY source of truth)
@@ -343,6 +226,8 @@ async function loadPrizesFromMetaobjects() {
     const label = getFieldValue(mo, 'prize_label');
     const probStr = getFieldValue(mo, 'probability');
     const maxStr = getFieldValue(mo, 'max_count');
+    const remainingStr = getFieldValue(mo, 'remaining_count');
+    const distributedStr = getFieldValue(mo, 'total_distributed');
     
     if (!id || !label) {
       errors.push(`Metaobject ${index + 1}: Missing prize_id or prize_label`);
@@ -362,7 +247,25 @@ async function loadPrizesFromMetaobjects() {
       }
     }
     
-    prizes.push({ id, label, prob, max });
+    let remaining = max;
+    if (remainingStr && remainingStr !== '' && remainingStr !== '-1') {
+      const parsed = parseInt(remainingStr);
+      if (!isNaN(parsed) && parsed >= 0) {
+        remaining = parsed;
+      }
+    }
+    
+    const totalDistributed = parseInt(distributedStr) || 0;
+    
+    prizes.push({ 
+      id, 
+      label, 
+      prob, 
+      max,
+      remaining: max === null ? null : remaining,
+      totalDistributed,
+      metaobjectId: mo.id
+    });
   });
   
   if (errors.length > 0) {
@@ -379,6 +282,33 @@ async function loadPrizesFromMetaobjects() {
 // Get current prizes - always fresh from metaobjects (real-time)
 async function getCurrentPrizes() {
   return await loadPrizesFromMetaobjects();
+}
+
+// Update remaining count in metaobject
+async function decrementPrizeCount(prize) {
+  if (prize.remaining === null) {
+    return; // Unlimited prize
+  }
+  
+  const newRemaining = Math.max(0, prize.remaining - 1);
+  
+  await updatePrizeMetaobject(prize.metaobjectId, [
+    { key: "remaining_count", value: String(newRemaining) },
+    { key: "is_available", value: String(newRemaining > 0) },
+    { key: "last_updated", value: new Date().toISOString() }
+  ]);
+}
+
+// Increment total distributed in metaobject
+async function incrementPrizeDistribution(prize) {
+  const newTotal = prize.totalDistributed + 1;
+  
+  await updatePrizeMetaobject(prize.metaobjectId, [
+    { key: "total_distributed", value: String(newTotal) },
+    { key: "last_updated", value: new Date().toISOString() }
+  ]);
+  
+  return newTotal;
 }
 
 // API Endpoints
@@ -404,20 +334,12 @@ app.post('/spin', async (req, res) => {
     // Load fresh prizes from metaobjects (real-time)
     const PRIZES = await getCurrentPrizes();
 
-    let shopMf = await ensureShopPrizeCounts(PRIZES);
-    let distributionMf = await ensurePrizeDistribution(PRIZES);
-    let counts = shopMf.value;
-
-    const available = PRIZES.filter(p => counts[p.id] === null || counts[p.id] > 0);
+    const available = PRIZES.filter(p => p.remaining === null || p.remaining > 0);
     
     if (available.length === 0) {
       const fallback = PRIZES.find(p => p.id === 'better_luck') || PRIZES[PRIZES.length - 1];
-      const prizeNumber = await incrementPrizeDistribution(fallback.id, distributionMf);
+      const prizeNumber = await incrementPrizeDistribution(fallback);
       await addPrizeToCustomer(customer, fallback.id, fallback.label, prizeNumber);
-      
-      syncPrizesToMetaobjects(counts, distributionMf.value, PRIZES).catch(err => {
-        console.error('Metaobject sync failed:', err.message);
-      });
       
       return res.json({ prize: { label: fallback.label, number: prizeNumber } });
     }
@@ -435,18 +357,13 @@ app.post('/spin', async (req, res) => {
       }
     }
 
-    if (counts[chosen.id] !== null) {
-      counts[chosen.id] = Math.max(0, counts[chosen.id] - 1);
-      await setShopPrizeCounts(counts, shopMf.metafield.id);
-    }
-
-    const prizeNumber = await incrementPrizeDistribution(chosen.id, distributionMf);
+    // Update metaobject: decrement remaining count
+    await decrementPrizeCount(chosen);
+    
+    // Update metaobject: increment total distributed and get prize number
+    const prizeNumber = await incrementPrizeDistribution(chosen);
 
     await addPrizeToCustomer(customer, chosen.id, chosen.label, prizeNumber);
-
-    syncPrizesToMetaobjects(counts, distributionMf.value, PRIZES).catch(err => {
-      console.error('Metaobject sync failed:', err.message);
-    });
 
     res.json({ 
       prize: { 
@@ -470,72 +387,23 @@ app.post('/admin/reset-prizes', async (req, res) => {
     }
 
     const PRIZES = await getCurrentPrizes();
-    const shopMf = await ensureShopPrizeCounts(PRIZES);
-    const distributionMf = await ensurePrizeDistribution(PRIZES);
     
-    const resetCounts = {};
-    PRIZES.forEach(p => resetCounts[p.id] = p.max === null ? null : p.max);
-    
-    await setShopPrizeCounts(resetCounts, shopMf.metafield.id);
-    await syncPrizesToMetaobjects(resetCounts, distributionMf.value, PRIZES);
+    // Reset each prize's remaining_count to max_count in metaobjects
+    for (const prize of PRIZES) {
+      const resetValue = prize.max === null ? -1 : prize.max;
+      await updatePrizeMetaobject(prize.metaobjectId, [
+        { key: "remaining_count", value: String(resetValue) },
+        { key: "is_available", value: String(prize.max === null || prize.max > 0) },
+        { key: "last_updated", value: new Date().toISOString() }
+      ]);
+    }
     
     res.json({ 
       success: true, 
-      message: 'Prize counts reset and synced to metaobjects',
-      newCounts: resetCounts
+      message: 'Prize counts reset in metaobjects'
     });
   } catch (err) {
     console.error('Reset Error:', err.message);
-    res.status(500).json({ error: 'server error', details: err.message });
-  }
-});
-
-app.post('/admin/sync-metaobjects', async (req, res) => {
-  try {
-    const { adminKey } = req.body;
-    
-    if (adminKey !== process.env.ADMIN_RESET_KEY) {
-      return res.status(403).json({ error: 'Unauthorized' });
-    }
-
-    const PRIZES = await getCurrentPrizes();
-    const shopMf = await ensureShopPrizeCounts(PRIZES);
-    const distributionMf = await ensurePrizeDistribution(PRIZES);
-    
-    const success = await syncPrizesToMetaobjects(shopMf.value, distributionMf.value, PRIZES);
-    
-    res.json({ 
-      success, 
-      message: success ? 'Metaobjects synced successfully' : 'Metaobject sync failed - check definition exists'
-    });
-  } catch (err) {
-    console.error('Sync Error:', err.message);
-    res.status(500).json({ error: 'server error', details: err.message });
-  }
-});
-
-app.post('/admin/refresh-cache', async (req, res) => {
-  try {
-    const { adminKey } = req.body;
-    
-    if (adminKey !== process.env.ADMIN_RESET_KEY) {
-      return res.status(403).json({ error: 'Unauthorized' });
-    }
-
-    const prizes = await getCurrentPrizes();
-    
-    res.json({ 
-      success: true, 
-      message: 'Prizes loaded from metaobjects (real-time mode - no cache)',
-      prizes: prizes.map(p => ({
-        id: p.id,
-        label: p.label,
-        probability: p.prob,
-        max: p.max
-      }))
-    });
-  } catch (err) {
-    console.error('Refresh Error:', err.message);
     res.status(500).json({ error: 'server error', details: err.message });
   }
 });
@@ -549,16 +417,15 @@ app.get('/admin/stats', async (req, res) => {
     }
 
     const PRIZES = await getCurrentPrizes();
-    const shopMf = await ensureShopPrizeCounts(PRIZES);
-    const distributionMf = await ensurePrizeDistribution(PRIZES);
     
     const stats = PRIZES.map(p => ({
       id: p.id,
       label: p.label,
       probability: p.prob,
-      maxAvailable: p.max,
-      remaining: shopMf.value[p.id],
-      totalDistributed: distributionMf.value[p.id] || 0
+      maxCount: p.max,
+      remaining: p.remaining,
+      totalDistributed: p.totalDistributed,
+      isAvailable: p.remaining === null || p.remaining > 0
     }));
     
     res.json({ stats });
@@ -601,17 +468,15 @@ app.get('/customer/:phone', async (req, res) => {
 app.get('/api/prizes/available', async (req, res) => {
   try {
     const PRIZES = await getCurrentPrizes();
-    const shopMf = await ensureShopPrizeCounts(PRIZES);
-    const distributionMf = await ensurePrizeDistribution(PRIZES);
     
     const availablePrizes = PRIZES.map(p => ({
       id: p.id,
       label: p.label,
       probability: p.prob,
       maxCount: p.max,
-      remaining: shopMf.value[p.id],
-      totalDistributed: distributionMf.value[p.id] || 0,
-      isAvailable: shopMf.value[p.id] === null || shopMf.value[p.id] > 0
+      remaining: p.remaining,
+      totalDistributed: p.totalDistributed,
+      isAvailable: p.remaining === null || p.remaining > 0
     }));
     
     res.json({ 
@@ -636,16 +501,12 @@ app.get('/api/prizes/available', async (req, res) => {
     console.log('✓ Loaded', PRIZES.length, 'prizes (real-time mode)');
     console.log('');
     
-    const shopMf = await ensureShopPrizeCounts(PRIZES);
-    const distributionMf = await ensurePrizeDistribution(PRIZES);
-    
-    await syncPrizesToMetaobjects(shopMf.value, distributionMf.value, PRIZES);
-    
     console.log('========================================');
     console.log('✓ SERVER READY - Real-time Updates Active');
     console.log('========================================');
     console.log('');
-    console.log('Prize changes in Shopify apply INSTANTLY to new spins');
+    console.log('All data stored in metaobjects');
+    console.log('Prize changes in Shopify apply INSTANTLY');
     console.log('');
     console.log('Endpoints:');
     console.log('  POST /spin - Spin the wheel');
@@ -670,18 +531,21 @@ app.get('/api/prizes/available', async (req, res) => {
     console.error('4. Add these fields:');
     console.error('   - prize_id (Single line text) - REQUIRED');
     console.error('   - prize_label (Single line text) - REQUIRED');
-    console.error('   - probability (Decimal) - REQUIRED - Editable by client');
-    console.error('   - max_count (Integer) - REQUIRED - Editable by client');
-    console.error('   - remaining_count (Integer) - Auto-updated');
-    console.error('   - total_distributed (Integer) - Auto-updated');
-    console.error('   - is_available (True/False) - Auto-updated');
-    console.error('   - last_updated (Date and time) - Auto-updated');
+    console.error('   - probability (Decimal) - REQUIRED - Client editable');
+    console.error('   - max_count (Integer) - REQUIRED - Client editable');
+    console.error('   - remaining_count (Integer) - Auto-updated by system');
+    console.error('   - total_distributed (Integer) - Auto-updated by system');
+    console.error('   - is_available (True/False) - Auto-updated by system');
+    console.error('   - last_updated (Date and time) - Auto-updated by system');
     console.error('5. Create metaobject entries for each prize:');
     console.error('   Example:');
     console.error('   - prize_id: "kivo_easy_lite"');
     console.error('   - prize_label: "Kivo Easy Lite"');
     console.error('   - probability: 0.001');
     console.error('   - max_count: 1 (use -1 for unlimited)');
+    console.error('   - remaining_count: 1 (will auto-update)');
+    console.error('   - total_distributed: 0 (will auto-update)');
+    console.error('   - is_available: true (will auto-update)');
     console.error('6. Restart the server');
     console.error('');
     console.error('========================================');
