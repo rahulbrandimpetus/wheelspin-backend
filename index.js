@@ -16,8 +16,6 @@ app.use(bodyParser.json());
 const cors = require('cors');
 app.use(cors({ origin: '*', methods: ['GET','POST','OPTIONS'] }));
 
-// No caching - always load fresh from metaobjects for real-time updates
-
 // Shopify REST API Helpers
 async function shopifyRequest(method, path, data) {
   const url = `${API_BASE}${path}`;
@@ -91,17 +89,14 @@ async function updateCustomerTags(customerId, tags) {
   return result.customer;
 }
 
-async function addPrizeToCustomer(customer, prizeId, prizeLabel, prizeNumber) {
+async function addPrizeToCustomer(customer, prizeLabel) {
   const currentDate = new Date().toISOString().split('T')[0];
   
   const spinPrizeTag = `Spin Prize: ${prizeLabel}`;
   const spinDateTag = `Spin Date: ${currentDate}`;
-  const prizeNumberTag = `Prize Number: ${prizeNumber}`;
-  const internalTag = `wheel_prize:${prizeId}`;
-  const playedTag = 'wheel_played';
   
   const existingTags = customer.tags ? customer.tags.split(',').map(t => t.trim()) : [];
-  const newTags = [...existingTags, spinPrizeTag, spinDateTag, prizeNumberTag, internalTag, playedTag];
+  const newTags = [...existingTags, spinPrizeTag, spinDateTag];
   const uniqueTags = [...new Set(newTags)].join(', ');
   
   await updateCustomerTags(customer.id, uniqueTags);
@@ -109,18 +104,18 @@ async function addPrizeToCustomer(customer, prizeId, prizeLabel, prizeNumber) {
   const noteData = {
     customer: {
       id: customer.id,
-      note: `Wheel Spin Prize: ${prizeLabel} (#${prizeNumber}) on ${new Date().toISOString()}`
+      note: `Wheel Spin Prize: ${prizeLabel} on ${new Date().toISOString()}`
     }
   };
   await shopifyRequest('put', `/customers/${customer.id}.json`, noteData);
   
-  return { spinPrizeTag, spinDateTag, prizeNumberTag };
+  return { spinPrizeTag, spinDateTag };
 }
 
 function hasPlayedWheel(customer) {
   if (!customer.tags) return false;
   const tags = customer.tags.toLowerCase();
-  return tags.includes('wheel_played') || tags.includes('wheel_prize:');
+  return tags.includes('spin prize:');
 }
 
 function getPrizeFromTags(customer) {
@@ -129,14 +124,12 @@ function getPrizeFromTags(customer) {
   
   const spinPrizeTag = tags.find(t => t.startsWith('Spin Prize:'));
   const spinDateTag = tags.find(t => t.startsWith('Spin Date:'));
-  const prizeNumberTag = tags.find(t => t.startsWith('Prize Number:'));
   
   if (!spinPrizeTag) return null;
   
   return {
     label: spinPrizeTag.replace('Spin Prize:', '').trim(),
-    date: spinDateTag ? spinDateTag.replace('Spin Date:', '').trim() : null,
-    number: prizeNumberTag ? prizeNumberTag.replace('Prize Number:', '').trim() : null
+    date: spinDateTag ? spinDateTag.replace('Spin Date:', '').trim() : null
   };
 }
 
@@ -247,12 +240,18 @@ async function loadPrizesFromMetaobjects() {
       }
     }
     
+    // If remaining_count is empty/invalid, use max_count
     let remaining = max;
     if (remainingStr && remainingStr !== '' && remainingStr !== '-1') {
       const parsed = parseInt(remainingStr);
       if (!isNaN(parsed) && parsed >= 0) {
         remaining = parsed;
       }
+    }
+    
+    // If max_count changed but remaining_count is higher, cap it at max
+    if (max !== null && remaining !== null && remaining > max) {
+      remaining = max;
     }
     
     const totalDistributed = parseInt(distributedStr) || 0;
@@ -284,29 +283,27 @@ async function getCurrentPrizes() {
   return await loadPrizesFromMetaobjects();
 }
 
-// Update remaining count in metaobject
-async function decrementPrizeCount(prize) {
-  if (prize.remaining === null) {
-    return; // Unlimited prize
+// Update all fields after prize distribution
+async function updatePrizeAfterSpin(prize) {
+  const updates = [];
+  
+  // Calculate new remaining count
+  if (prize.remaining !== null) {
+    const newRemaining = Math.max(0, prize.remaining - 1);
+    updates.push({ key: "remaining_count", value: String(newRemaining) });
+    updates.push({ key: "is_available", value: String(newRemaining > 0) });
+  } else {
+    updates.push({ key: "is_available", value: "true" });
   }
   
-  const newRemaining = Math.max(0, prize.remaining - 1);
-  
-  await updatePrizeMetaobject(prize.metaobjectId, [
-    { key: "remaining_count", value: String(newRemaining) },
-    { key: "is_available", value: String(newRemaining > 0) },
-    { key: "last_updated", value: new Date().toISOString() }
-  ]);
-}
-
-// Increment total distributed in metaobject
-async function incrementPrizeDistribution(prize) {
+  // Increment total distributed
   const newTotal = prize.totalDistributed + 1;
+  updates.push({ key: "total_distributed", value: String(newTotal) });
   
-  await updatePrizeMetaobject(prize.metaobjectId, [
-    { key: "total_distributed", value: String(newTotal) },
-    { key: "last_updated", value: new Date().toISOString() }
-  ]);
+  // Update timestamp
+  updates.push({ key: "last_updated", value: new Date().toISOString() });
+  
+  await updatePrizeMetaobject(prize.metaobjectId, updates);
   
   return newTotal;
 }
@@ -331,19 +328,26 @@ app.post('/spin', async (req, res) => {
       customer = await createCustomerWithPhone(phone);
     }
 
-    // Load fresh prizes from metaobjects (real-time)
+    // Load fresh prizes from metaobjects (real-time with latest probability and max_count)
     const PRIZES = await getCurrentPrizes();
 
+    // Filter available prizes based on remaining count
     const available = PRIZES.filter(p => p.remaining === null || p.remaining > 0);
     
     if (available.length === 0) {
       const fallback = PRIZES.find(p => p.id === 'better_luck') || PRIZES[PRIZES.length - 1];
-      const prizeNumber = await incrementPrizeDistribution(fallback);
-      await addPrizeToCustomer(customer, fallback.id, fallback.label, prizeNumber);
+      const prizeNumber = await updatePrizeAfterSpin(fallback);
+      await addPrizeToCustomer(customer, fallback.label);
       
-      return res.json({ prize: { label: fallback.label, number: prizeNumber } });
+      return res.json({ 
+        prize: { 
+          label: fallback.label, 
+          number: prizeNumber 
+        } 
+      });
     }
 
+    // Calculate winner based on probability
     const totalProb = available.reduce((sum, p) => sum + p.prob, 0);
     let r = Math.random() * totalProb;
     let cumulative = 0;
@@ -357,13 +361,11 @@ app.post('/spin', async (req, res) => {
       }
     }
 
-    // Update metaobject: decrement remaining count
-    await decrementPrizeCount(chosen);
-    
-    // Update metaobject: increment total distributed and get prize number
-    const prizeNumber = await incrementPrizeDistribution(chosen);
+    // Update all metaobject fields after spin
+    const prizeNumber = await updatePrizeAfterSpin(chosen);
 
-    await addPrizeToCustomer(customer, chosen.id, chosen.label, prizeNumber);
+    // Add prize to customer (only 2 tags)
+    await addPrizeToCustomer(customer, chosen.label);
 
     res.json({ 
       prize: { 
@@ -388,7 +390,7 @@ app.post('/admin/reset-prizes', async (req, res) => {
 
     const PRIZES = await getCurrentPrizes();
     
-    // Reset each prize's remaining_count to max_count in metaobjects
+    // Reset each prize's remaining_count to max_count
     for (const prize of PRIZES) {
       const resetValue = prize.max === null ? -1 : prize.max;
       await updatePrizeMetaobject(prize.metaobjectId, [
@@ -400,7 +402,7 @@ app.post('/admin/reset-prizes', async (req, res) => {
     
     res.json({ 
       success: true, 
-      message: 'Prize counts reset in metaobjects'
+      message: 'Prize counts reset to max_count values'
     });
   } catch (err) {
     console.error('Reset Error:', err.message);
@@ -532,20 +534,12 @@ app.get('/api/prizes/available', async (req, res) => {
     console.error('   - prize_id (Single line text) - REQUIRED');
     console.error('   - prize_label (Single line text) - REQUIRED');
     console.error('   - probability (Decimal) - REQUIRED - Client editable');
-    console.error('   - max_count (Integer) - REQUIRED - Client editable');
+    console.error('   - max_count (Integer) - REQUIRED - Client editable (-1 for unlimited)');
     console.error('   - remaining_count (Integer) - Auto-updated by system');
     console.error('   - total_distributed (Integer) - Auto-updated by system');
     console.error('   - is_available (True/False) - Auto-updated by system');
     console.error('   - last_updated (Date and time) - Auto-updated by system');
-    console.error('5. Create metaobject entries for each prize:');
-    console.error('   Example:');
-    console.error('   - prize_id: "kivo_easy_lite"');
-    console.error('   - prize_label: "Kivo Easy Lite"');
-    console.error('   - probability: 0.001');
-    console.error('   - max_count: 1 (use -1 for unlimited)');
-    console.error('   - remaining_count: 1 (will auto-update)');
-    console.error('   - total_distributed: 0 (will auto-update)');
-    console.error('   - is_available: true (will auto-update)');
+    console.error('5. Create metaobject entries for each prize');
     console.error('6. Restart the server');
     console.error('');
     console.error('========================================');
