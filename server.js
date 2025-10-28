@@ -1,24 +1,19 @@
-const express = require('express');
-const twilio = require('twilio');
-const crypto = require('crypto');
-const rateLimit = require('express-rate-limit');
 require('dotenv').config();
+const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const { PORT, allowedOrigins } = require('./config/constants');
+const wheelRoutes = require('./routes/wheel.routes');
+const otpRoutes = require('./routes/otp.routes');
+const { getCurrentPrizes } = require('./services/wheel.service');
 
 const app = express();
+
+app.use(bodyParser.json());
 app.use(express.json());
-
-
-const cors = require('cors');
-
-// Enable CORS for Shopify store domain (change to your actual store domain)
-const allowedOrigins = [
-  'https://motovolt-dev-store.myshopify.com',
-  'https://motovolt.co'  
-];
 
 app.use(cors({
   origin: function (origin, callback) {
-    // allow requests with no origin (like mobile apps or curl)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
@@ -31,263 +26,19 @@ app.use(cors({
   credentials: true
 }));
 
-// Twilio configuration
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const authToken = process.env.TWILIO_AUTH_TOKEN;
-const client = twilio(accountSid, authToken);
+// Routes
+app.use('/', wheelRoutes);
+app.use('/api', otpRoutes);
 
-// In-memory storage for OTPs (use Redis in production)
-const otpStorage = new Map();
-
-// Rate limiting
-const otpRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // limit each IP to 5 requests per windowMs
-  message: { 
-    success: false, 
-    message: 'Too many OTP requests, please try again later.' 
-  }
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Helper functions
-const generateOTP = () => {
-  return crypto.randomInt(1000, 9999).toString();
-};
-
-const formatPhoneNumber = (phoneNumber) => {
-  // Remove any non-digit characters
-  const cleaned = phoneNumber.replace(/\D/g, '');
-  
-  // Add country code if not present (assuming +1 for US/Canada)
-  if (cleaned.length === 10) {
-    return `+1${cleaned}`;
-  } else if (cleaned.length === 11 && cleaned.startsWith('1')) {
-    return `+${cleaned}`;
-  } else if (cleaned.startsWith('+')) {
-    return phoneNumber;
-  } else {
-    return `+${cleaned}`;
-  }
-};
-
-const isValidPhoneNumber = (phoneNumber) => {
-  const phoneRegex = /^\+[1-9]\d{1,14}$/;
-  return phoneRegex.test(phoneNumber);
-};
-
-// Middleware for input validation
-const validatePhoneNumber = (req, res, next) => {
-  const { phoneNumber } = req.body;
-  
-  if (!phoneNumber) {
-    return res.status(400).json({
-      success: false,
-      message: 'Phone number is required'
-    });
-  }
-  
-  const formattedPhone = formatPhoneNumber(phoneNumber);
-  
-  if (!isValidPhoneNumber(formattedPhone)) {
-    return res.status(400).json({
-      success: false,
-      message: 'Invalid phone number format'
-    });
-  }
-  
-  req.formattedPhone = formattedPhone;
-  next();
-};
-
-// Send OTP endpoint
-app.post('/api/otp/send', otpRateLimit, validatePhoneNumber, async (req, res) => {
-  try {
-    const phoneNumber = req.formattedPhone;
-    const otp = "1234"; //hard coded OTP
-    const expiryTime = Date.now() + 10 * 60 * 1000; // 10 minutes expiry
-    
-    // Store OTP with metadata
-    otpStorage.set(phoneNumber, {
-      otp: otp,
-      expiryTime: expiryTime,
-      attempts: 0,
-      createdAt: Date.now()
-    });
-    
-    // Send SMS via Twilio
-    const message = await client.messages.create({
-      body: `Your verification code is: ${otp}. This code will expire in 10 minutes.`,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: phoneNumber
-    });
-    
-    console.log(`OTP sent to ${phoneNumber}: ${otp}`); // Remove in production
-    
-    res.status(200).json({
-      success: true,
-      message: 'OTP sent successfully',
-      messageSid: message.sid,
-      expiresIn: '10 minutes'
-    });
-    
-  } catch (error) {
-    console.error('Error sending OTP:', error);
-    
-    if (error.code === 21211) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid phone number'
-      });
-    }
-    
-    res.status(500).json({
-      success: false,
-      message: 'Failed to send OTP',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-// Verify OTP endpoint
-app.post('/api/otp/verify', async (req, res) => {
-  try {
-    const { phoneNumber, otp } = req.body;
-    
-    if (!phoneNumber || !otp) {
-      return res.status(400).json({
-        success: false,
-        message: 'Phone number and OTP are required'
-      });
-    }
-    
-    const formattedPhone = formatPhoneNumber(phoneNumber);
-    const storedData = otpStorage.get(formattedPhone);
-    
-    if (!storedData) {
-      return res.status(400).json({
-        success: false,
-        message: 'No OTP found for this phone number'
-      });
-    }
-    
-    // Check if OTP has expired
-    if (Date.now() > storedData.expiryTime) {
-      otpStorage.delete(formattedPhone);
-      return res.status(400).json({
-        success: false,
-        message: 'OTP has expired'
-      });
-    }
-    
-    // Check attempt limit
-    if (storedData.attempts >= 3) {
-      otpStorage.delete(formattedPhone);
-      return res.status(400).json({
-        success: false,
-        message: 'Maximum verification attempts exceeded'
-      });
-    }
-    
-    // Verify OTP
-    if (storedData.otp === otp.toString()) {
-      otpStorage.delete(formattedPhone);
-      
-      res.status(200).json({
-        success: true,
-        message: 'OTP verified successfully'
-      });
-    } else {
-      // Increment attempt counter
-      storedData.attempts += 1;
-      otpStorage.set(formattedPhone, storedData);
-      
-      res.status(400).json({
-        success: false,
-        message: 'Invalid OTP',
-        attemptsRemaining: 3 - storedData.attempts
-      });
-    }
-    
-  } catch (error) {
-    console.error('Error verifying OTP:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to verify OTP',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-// Resend OTP endpoint
-app.post('/api/otp/resend', otpRateLimit, validatePhoneNumber, async (req, res) => {
-  try {
-    const phoneNumber = req.formattedPhone;
-    const storedData = otpStorage.get(phoneNumber);
-    
-    // Check if there's an existing OTP and if enough time has passed
-    if (storedData) {
-      const timeSinceCreation = Date.now() - storedData.createdAt;
-      const minResendTime = 60 * 1000; // 1 minute
-      
-      if (timeSinceCreation < minResendTime) {
-        const remainingTime = Math.ceil((minResendTime - timeSinceCreation) / 1000);
-        return res.status(400).json({
-          success: false,
-          message: `Please wait ${remainingTime} seconds before requesting a new OTP`
-        });
-      }
-    }
-    
-    const otp = "1234";  //hard coded OTP
-    const expiryTime = Date.now() + 10 * 60 * 1000; // 10 minutes expiry
-    
-    // Store new OTP
-    otpStorage.set(phoneNumber, {
-      otp: otp,
-      expiryTime: expiryTime,
-      attempts: 0,
-      createdAt: Date.now()
-    });
-    
-    // Resend SMS via Twilio
-    const message = await client.messages.create({
-      body: `Your new verification code is: ${otp}. This code will expire in 10 minutes.`,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: phoneNumber
-    });
-    
-    console.log(`OTP resent to ${phoneNumber}: ${otp}`); // Remove in production
-    
-    res.status(200).json({
-      success: true,
-      message: 'OTP resent successfully',
-      messageSid: message.sid,
-      expiresIn: '10 minutes'
-    });
-    
-  } catch (error) {
-    console.error('Error resending OTP:', error);
-    
-    if (error.code === 21211) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid phone number'
-      });
-    }
-    
-    res.status(500).json({
-      success: false,
-      message: 'Failed to resend OTP',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-// Health check endpoint
 app.get('/api/health', (req, res) => {
   res.status(200).json({
     success: true,
-    message: 'OTP API is running',
+    message: 'Combined API is running',
     timestamp: new Date().toISOString()
   });
 });
@@ -310,20 +61,66 @@ app.use((req, res) => {
   });
 });
 
-// Cleanup expired OTPs (run every 5 minutes)
-setInterval(() => {
-  const now = Date.now();
-  for (const [phoneNumber, data] of otpStorage.entries()) {
-    if (now > data.expiryTime) {
-      otpStorage.delete(phoneNumber);
-      console.log(`Cleaned up expired OTP for ${phoneNumber}`);
-    }
+// Server start
+(async () => {
+  try {
+    console.log('========================================');
+    console.log('COMBINED BACKEND - STARTING');
+    console.log('========================================');
+    
+    const PRIZES = await getCurrentPrizes();
+    
+    console.log('✓ Loaded', PRIZES.length, 'prizes (real-time mode)');
+    console.log('✓ OTP Service initialized');
+    console.log('');
+    
+    console.log('========================================');
+    console.log('✓ SERVER READY - Real-time Updates Active');
+    console.log('========================================');
+    console.log('');
+    console.log('Wheel Spin Endpoints:');
+    console.log('  POST /spin - Spin the wheel');
+    console.log('  POST /admin/reset-prizes - Reset counts');
+    console.log('  GET  /admin/stats - View statistics');
+    console.log('  GET  /customer/:phone - Get customer info');
+    console.log('  GET  /api/prizes/available - Get available prizes');
+    console.log('');
+    console.log('OTP Endpoints:');
+    console.log('  POST /api/otp/send - Send OTP');
+    console.log('  POST /api/otp/verify - Verify OTP');
+    console.log('  POST /api/otp/resend - Resend OTP');
+    console.log('========================================');
+    console.log('');
+    
+    app.listen(PORT, () => console.log('✓ Server running on port', PORT));
+  } catch (err) {
+    console.error('');
+    console.error('========================================');
+    console.error('❌ STARTUP ERROR');
+    console.error('========================================');
+    console.error(err.message);
+    console.error('');
+    console.error('SETUP REQUIRED:');
+    console.error('');
+    console.error('1. Go to: Shopify Admin → Settings → Custom Data → Metaobjects');
+    console.error('2. Click "Add definition"');
+    console.error('3. Name: "Wheel Prize", Type: "wheel_prize"');
+    console.error('4. Add these fields:');
+    console.error('   - prize_id (Single line text) - REQUIRED');
+    console.error('   - prize_label (Single line text) - REQUIRED');
+    console.error('   - probability (Decimal) - REQUIRED - Client editable (0-100%)');
+    console.error('   - max_count (Integer) - REQUIRED - Client editable (-1 for unlimited)');
+    console.error('   - remaining_count (Integer) - Auto-updated by system');
+    console.error('   - total_distributed (Integer) - Auto-updated by system');
+    console.error('   - is_available (True/False) - Auto-updated by system');
+    console.error('   - last_updated (Date and time) - Auto-updated by system');
+    console.error('5. Create metaobject entries for each prize');
+    console.error('6. Configure Twilio credentials in .env');
+    console.error('7. Restart the server');
+    console.error('');
+    console.error('========================================');
+    process.exit(1);
   }
-}, 5 * 60 * 1000);
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`OTP API server running on port ${PORT}`);
-});
+})();
 
 module.exports = app;

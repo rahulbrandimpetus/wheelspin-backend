@@ -1,5 +1,5 @@
 {
-  "name": "twilio-api",
+  "name": "backend-api",
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
@@ -8,10 +8,11 @@
   },
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Combined Wheel Spin and OTP Backend",
   "dependencies": {
+    "axios": "^1.6.0",
+    "body-parser": "^1.20.2",
     "cors": "^2.8.5",
-    "crypto": "^1.0.1",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
     "express-rate-limit": "^8.0.1",
