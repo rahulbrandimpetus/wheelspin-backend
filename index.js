@@ -94,11 +94,15 @@ async function addPrizeToCustomer(customer, prizeLabel) {
   
   const spinPrizeTag = `Spin Prize: ${prizeLabel}`;
   const spinDateTag = `Spin Date: ${currentDate}`;
+  const spinTheWheel = `Spin The Wheel`;
   
   const existingTags = customer.tags ? customer.tags.split(',').map(t => t.trim()) : [];
-  const newTags = [...existingTags, spinPrizeTag, spinDateTag];
+  
+  // Add all three tags to the array
+  const newTags = [...existingTags, spinPrizeTag, spinDateTag, spinTheWheel];
   const uniqueTags = [...new Set(newTags)].join(', ');
   
+  // Pass only customerId and the tags string
   await updateCustomerTags(customer.id, uniqueTags);
   
   const noteData = {
