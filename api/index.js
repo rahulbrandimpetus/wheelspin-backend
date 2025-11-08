@@ -2,10 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const { PORT, allowedOrigins } = require('./config/constants');
-const wheelRoutes = require('./routes/wheel.routes');
-const otpRoutes = require('./routes/otp.routes');
-const { getCurrentPrizes } = require('./services/wheel.service');
+const { PORT, allowedOrigins } = require('../config/constants');
+const wheelRoutes = require('../routes/wheel.routes');
+const otpRoutes = require('../routes/otp.routes');
+const { getCurrentPrizes } = require('../services/wheel.service');
 
 const app = express();
 
