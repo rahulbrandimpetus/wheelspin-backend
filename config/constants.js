@@ -8,10 +8,10 @@ module.exports = {
   API_BASE: `https://${process.env.SHOPIFY_STORE}/admin/api/2024-10`,
   GRAPHQL_ENDPOINT: `https://${process.env.SHOPIFY_STORE}/admin/api/2024-10/graphql.json`,
   
-  // Twilio
-  TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN,
-  TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER,
+  // MSG91
+  MSG91_AUTH_KEY: process.env.MSG91_AUTH_KEY,
+  MSG91_TEMPLATE_ID: process.env.MSG91_TEMPLATE_ID,
+  MSG91_SENDER_ID: process.env.MSG91_SENDER_ID,
   
   // Admin
   ADMIN_RESET_KEY: process.env.ADMIN_RESET_KEY,

@@ -33,7 +33,7 @@ const validatePhoneNumber = (req, res, next) => {
   if (!isValidPhoneNumber(formattedPhone)) {
     return res.status(400).json({
       success: false,
-      message: 'Invalid phone number format'
+      message: 'Invalid phone number format. Please use Indian mobile number (10 digits)'
     });
   }
   
@@ -44,29 +44,27 @@ const validatePhoneNumber = (req, res, next) => {
 router.post('/otp/send', otpRateLimit, validatePhoneNumber, async (req, res) => {
   try {
     const phoneNumber = req.formattedPhone;
-    const message = await sendOTP(phoneNumber);
+    const { templateParams } = req.body; // Optional template variables
+    
+    const result = await sendOTP(phoneNumber, templateParams || {});
     
     res.status(200).json({
       success: true,
       message: 'OTP sent successfully',
-      messageSid: message.sid,
+      type: result.type,
+      requestId: result.requestId,
       expiresIn: '10 minutes'
     });
     
   } catch (error) {
     console.error('Error sending OTP:', error);
     
-    if (error.code === 21211) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid phone number'
-      });
-    }
+    const errorMessage = error.response?.data?.message || error.message;
     
     res.status(500).json({
       success: false,
       message: 'Failed to send OTP',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: process.env.NODE_ENV === 'development' ? errorMessage : undefined
     });
   }
 });
@@ -83,7 +81,15 @@ router.post('/otp/verify', async (req, res) => {
     }
     
     const formattedPhone = formatPhoneNumber(phoneNumber);
-    const result = verifyOTP(formattedPhone, otp);
+    
+    if (!isValidPhoneNumber(formattedPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid phone number format'
+      });
+    }
+    
+    const result = await verifyOTP(formattedPhone, otp);
     
     if (result.success) {
       res.status(200).json(result);
@@ -104,7 +110,9 @@ router.post('/otp/verify', async (req, res) => {
 router.post('/otp/resend', otpRateLimit, validatePhoneNumber, async (req, res) => {
   try {
     const phoneNumber = req.formattedPhone;
-    const result = await resendOTP(phoneNumber);
+    const { retryType } = req.body; // 'text' or 'voice'
+    
+    const result = await resendOTP(phoneNumber, retryType || 'text');
     
     if (!result.success) {
       return res.status(400).json(result);
@@ -112,25 +120,20 @@ router.post('/otp/resend', otpRateLimit, validatePhoneNumber, async (req, res) =
     
     res.status(200).json({
       success: true,
-      message: 'OTP resent successfully',
-      messageSid: result.message.sid,
+      message: result.message,
+      type: result.type,
       expiresIn: '10 minutes'
     });
     
   } catch (error) {
     console.error('Error resending OTP:', error);
     
-    if (error.code === 21211) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid phone number'
-      });
-    }
+    const errorMessage = error.response?.data?.message || error.message;
     
     res.status(500).json({
       success: false,
       message: 'Failed to resend OTP',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: process.env.NODE_ENV === 'development' ? errorMessage : undefined
     });
   }
 });
