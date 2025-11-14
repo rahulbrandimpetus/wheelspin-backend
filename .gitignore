@@ -45,3 +45,4 @@ coverage/
 
 # Optional: dotenv backup
 .env.bak
+.vercel
