@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { MSG91_AUTH_KEY, MSG91_TEMPLATE_ID } = require('../config/constants');
+const { MSG91_AUTH_KEY, MSG91_TEMPLATE_ID, MSG91_BASE_URL } = require('../config/constants');
 
 // Store send timestamp for rate limiting resend
 const otpTimestamps = new Map();
@@ -32,8 +32,10 @@ const isValidPhoneNumber = (phoneNumber) => {
 
 const sendOTP = async (phoneNumber, templateParams = {}) => {
   try {
+
+    
     const response = await axios.post(
-      'https://control.msg91.com/api/v5/otp',
+      `${MSG91_BASE_URL}/otp`,
       templateParams,
       {
         params: {
@@ -51,8 +53,7 @@ const sendOTP = async (phoneNumber, templateParams = {}) => {
     // Store timestamp for rate limiting
     otpTimestamps.set(phoneNumber, Date.now());
     
-    console.log(`OTP sent to ${phoneNumber}`);
-    console.log('MSG91 Response:', response.data);
+    console.log('MSG91 Success Response:', response.data);
     
     return {
       success: true,
@@ -61,14 +62,20 @@ const sendOTP = async (phoneNumber, templateParams = {}) => {
       requestId: response.data.request_id
     };
   } catch (error) {
-    console.error('MSG91 Send Error:', error.response?.data || error.message);
-    throw error;
+    console.error('=== MSG91 SEND ERROR ===');
+    console.error('Status:', error.response?.status);
+    console.error('Data:', error.response?.data);
+    console.error('Message:', error.message);
+    
+    // Throw with more details
+    const errorMsg = error.response?.data?.message || error.message;
+    throw new Error(`MSG91 Error: ${errorMsg}`);
   }
 };
 
 const verifyOTP = async (phoneNumber, otp) => {
   try {
-    const response = await axios.get('https://control.msg91.com/api/v5/otp/verify', {
+    const response = await axios.get(`${MSG91_BASE_URL}/otp/verify`, {
       params: {
         otp: otp,
         mobile: phoneNumber
@@ -125,7 +132,7 @@ const resendOTP = async (phoneNumber, retryType = 'text') => {
   }
   
   try {
-    const response = await axios.get('https://control.msg91.com/api/v5/otp/retry', {
+    const response = await axios.get(`${MSG91_BASE_URL}/otp/retry`, {
       params: {
         authkey: MSG91_AUTH_KEY,
         retrytype: retryType, // 'text' or 'voice'
